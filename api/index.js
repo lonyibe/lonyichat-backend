@@ -160,6 +160,80 @@ app.post('/signup-profile', async (req, res) => {
 });
 
 /**
+ * GET /profile
+ * Fetches the currently authenticated user's full profile.
+ */
+app.get('/profile', authenticate, async (req, res) => {
+    if (!checkDbConnection(res)) return;
+    try {
+        const userId = req.user.uid;
+        const userDoc = await db.collection('users').doc(userId).get();
+
+        if (!userDoc.exists) {
+            return res.status(404).json({ success: false, message: 'User profile not found.' });
+        }
+
+        const userData = userDoc.data();
+        const profile = {
+            userId: userDoc.id,
+            name: userData.name,
+            email: userData.email,
+            phone: userData.phone || null,
+            age: userData.age || null,
+            country: userData.country || null,
+            photoUrl: userData.photoUrl || null,
+            // Calculate mock stats from array lengths
+            followingCount: userData.following ? userData.following.length : 0,
+            followerCount: userData.followers ? userData.followers.length : 0,
+            churchCount: userData.churches ? userData.churches.length : 0,
+            // Format timestamp for Kotlin client
+            createdAt: userData.createdAt ? {
+                _seconds: userData.createdAt.seconds,
+                _nanoseconds: userData.createdAt.nanoseconds
+            } : null
+        };
+        
+        res.status(200).json({ success: true, profile });
+
+    } catch (error) {
+        console.error("Error fetching user profile:", error);
+        res.status(500).json({ success: false, message: 'Failed to fetch profile.', error: error.message });
+    }
+});
+
+/**
+ * PUT /profile
+ * Updates the currently authenticated user's profile details.
+ */
+app.put('/profile', authenticate, async (req, res) => {
+    if (!checkDbConnection(res)) return;
+    const { name, phone, age, country, photoUrl } = req.body;
+    const userId = req.user.uid;
+
+    if (!name || !phone || !age || !country) {
+        return res.status(400).json({ success: false, message: 'Missing required fields for update: name, phone, age, country.' });
+    }
+    
+    try {
+        const userRef = db.collection('users').doc(userId);
+        
+        await userRef.update({
+            name: name,
+            phone: phone,
+            age: parseInt(age),
+            country: country,
+            // Only update photoUrl if provided, otherwise preserve existing or ignore
+            ...(photoUrl !== undefined && { photoUrl: photoUrl || null }) 
+        });
+
+        res.status(200).json({ success: true, message: 'Profile updated successfully.' });
+    } catch (error) {
+        console.error("Error updating user profile:", error);
+        res.status(500).json({ success: false, message: 'Failed to update profile.', error: error.message });
+    }
+});
+
+/**
  * GET /users/search
  * Finds other Christians by searching for their name.
  */
@@ -240,10 +314,10 @@ app.get('/posts', authenticate, async (req, res) => {
                 type: data.type,
                 reactions: data.reactions || { amen: 0, hallelujah: 0, praiseGod: 0 },
                 commentCount: data.commentCount || 0,
-                createdAt: {
+                createdAt: data.createdAt ? {
                     _seconds: data.createdAt.seconds,
                     _nanoseconds: data.createdAt.nanoseconds
-                }
+                } : null
             };
         });
 
