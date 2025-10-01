@@ -391,6 +391,121 @@ app.post('/posts/:postId/react', authenticate, async (req, res) => {
 
 
 // -------------------------------------------------------------------------
+// CHAT ROUTES (NEW SECTION)
+// -------------------------------------------------------------------------
+
+/**
+ * POST /chats
+ * Creates a new chat conversation or sends the first message.
+ */
+app.post('/chats', authenticate, async (req, res) => {
+    if (!checkDbConnection(res)) return;
+    const senderId = req.user.uid;
+    const { recipientId, messageContent, senderName, recipientName } = req.body;
+
+    if (!recipientId || !messageContent || !senderName || !recipientName) {
+        return res.status(400).json({ success: false, message: 'Recipient ID, message content, sender name, and recipient name are required.' });
+    }
+
+    // Determine a canonical ID for the chat (sort UIDs to ensure uniqueness regardless of who starts it)
+    const participants = [senderId, recipientId].sort();
+    const chatId = participants.join('_');
+
+    const conversationRef = db.collection('chats').doc(chatId);
+    const messageRef = conversationRef.collection('messages').doc();
+
+    try {
+        // 1. Transaction to update/create the main chat document and create the message
+        await db.runTransaction(async (transaction) => {
+            const conversationDoc = await transaction.get(conversationRef);
+
+            // Chat Document Data
+            const chatData = {
+                participants: participants,
+                lastMessage: messageContent,
+                lastMessageTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+                // Store names for easy display in chat list (Kotlin client uses this)
+                participantNames: {
+                    [senderId]: senderName,
+                    [recipientId]: recipientName
+                }
+            };
+
+            if (conversationDoc.exists) {
+                // Update existing chat
+                transaction.update(conversationRef, chatData);
+            } else {
+                // Create new chat
+                transaction.set(conversationRef, chatData);
+            }
+            
+            // Add the new message
+            const newMessage = {
+                senderId: senderId,
+                content: messageContent,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                read: false
+            };
+            transaction.set(messageRef, newMessage);
+        });
+
+        res.status(201).json({ success: true, message: 'Message sent.', chatId: chatId });
+
+    } catch (error) {
+        console.error("Error sending chat message:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+/**
+ * GET /chats/:chatId/messages
+ * Retrieves the message history for a specific chat.
+ */
+app.get('/chats/:chatId/messages', authenticate, async (req, res) => {
+    if (!checkDbConnection(res)) return;
+    const { chatId } = req.params;
+    const userId = req.user.uid;
+
+    try {
+        const chatDoc = await db.collection('chats').doc(chatId).get();
+        if (!chatDoc.exists) {
+            return res.status(404).json({ success: false, message: 'Chat not found.' });
+        }
+
+        // Basic check to ensure the authenticated user is a participant in this chat
+        if (!chatDoc.data().participants.includes(userId)) {
+            return res.status(403).json({ success: false, message: 'Forbidden: You are not a participant in this chat.' });
+        }
+
+        const messagesSnapshot = await db.collection('chats').doc(chatId).collection('messages')
+            .orderBy('timestamp', 'asc')
+            .limit(50) // Limit to the last 50 messages for initial load
+            .get();
+
+        const messages = messagesSnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                id: doc.id,
+                senderId: data.senderId,
+                content: data.content,
+                // Format timestamp for Kotlin client
+                timestamp: data.timestamp ? {
+                    _seconds: data.timestamp.seconds,
+                    _nanoseconds: data.timestamp.nanoseconds
+                } : null
+            };
+        });
+        
+        res.status(200).json({ success: true, messages });
+
+    } catch (error) {
+        console.error("Error fetching chat messages:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
+// -------------------------------------------------------------------------
 // CHURCHES, GROUPS & EVENTS ROUTES
 // -------------------------------------------------------------------------
 
